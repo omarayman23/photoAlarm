@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "dependencies": {
+    "tailwindcss": "^3.3.0",
+"autoprefixer": "^10.4.16",
+"postcss": "^8.4.31"
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.0",
