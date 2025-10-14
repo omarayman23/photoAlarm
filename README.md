@@ -1,3 +1,4 @@
+CURRENT LINK: https://photo-alarm-yfw7-eapxpaxh4-omar-hs-projects-cf8ee844.vercel.app/
 # photoAlarm
 works just like a regular alarm with a twist, for u to stop the alarm u need to take a picture or a 5 second audio recording of yourself to ensure you are up and do not go back to sleep
 
