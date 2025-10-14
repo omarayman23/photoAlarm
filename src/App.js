@@ -1,531 +1,486 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Camera, Clock, Plus, Trash2, LogOut, Bell } from 'lucide-react';
+import { Camera, Mic, Trash2, Plus, X, Bell, LogOut, Users } from 'lucide-react';
 
-// Backend API with persistent storage
-const mockBackend = {
-  STORAGE_KEY: 'photoAlarmData',
-  
-  getData() {
-    const data = localStorage.getItem(this.STORAGE_KEY);
-    return data ? JSON.parse(data) : { users: [], currentUserId: null };
-  },
-  
-  saveData(data) {
-    localStorage.setItem(this.STORAGE_KEY, JSON.stringify(data));
-  },
-  
-  register(email, password) {
-    const data = this.getData();
-    const existing = data.users.find(u => u.email === email);
-    if (existing) throw new Error('User already exists');
-    
-    const user = {
-      id: Date.now(),
-      email,
-      password,
-      alarms: []
-    };
-    data.users.push(user);
-    data.currentUserId = user.id;
-    this.saveData(data);
-    return user;
-  },
-  
-  login(email, password) {
-    const data = this.getData();
-    const user = data.users.find(u => u.email === email && u.password === password);
-    if (!user) throw new Error('Invalid credentials');
-    data.currentUserId = user.id;
-    this.saveData(data);
-    return user;
-  },
-  
-  logout() {
-    const data = this.getData();
-    data.currentUserId = null;
-    this.saveData(data);
-  },
-  
-  getCurrentUser() {
-    const data = this.getData();
-    if (!data.currentUserId) return null;
-    return data.users.find(u => u.id === data.currentUserId);
-  },
-  
-  addAlarm(alarm) {
-    const data = this.getData();
-    const user = data.users.find(u => u.id === data.currentUserId);
-    if (!user) throw new Error('Not authenticated');
-    
-    alarm.id = Date.now();
-    user.alarms.push(alarm);
-    this.saveData(data);
-    return alarm;
-  },
-  
-  deleteAlarm(alarmId) {
-    const data = this.getData();
-    const user = data.users.find(u => u.id === data.currentUserId);
-    if (!user) throw new Error('Not authenticated');
-    
-    user.alarms = user.alarms.filter(a => a.id !== alarmId);
-    this.saveData(data);
-  },
-  
-  getAlarms() {
-    const user = this.getCurrentUser();
-    return user ? user.alarms : [];
-  }
-};
-
-export default function PhotoAlarmApp() {
-  const [user, setUser] = useState(null);
-  const [showAuth, setShowAuth] = useState(true);
-  const [isLogin, setIsLogin] = useState(true);
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [authError, setAuthError] = useState('');
-  
+export default function AlarmApp() {
+  const [currentUser, setCurrentUser] = useState(null);
+  const [users, setUsers] = useState([]);
   const [alarms, setAlarms] = useState([]);
-  const [showAddAlarm, setShowAddAlarm] = useState(false);
-  const [newAlarm, setNewAlarm] = useState({
-    hour: '12',
-    minute: '00',
-    period: 'AM',
-    sound: 'default'
-  });
-  
+  const [showSignup, setShowSignup] = useState(false);
+  const [showLogin, setShowLogin] = useState(true);
   const [activeAlarm, setActiveAlarm] = useState(null);
   const [showCamera, setShowCamera] = useState(false);
-  const [cameraError, setCameraError] = useState('');
-  const [stream, setStream] = useState(null);
+  const [showVoiceRecorder, setShowVoiceRecorder] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingTime, setRecordingTime] = useState(0);
+  const [currentTime, setCurrentTime] = useState(new Date());
+  
+  const [signupData, setSignupData] = useState({ username: '', age: '', email: '', password: '' });
+  const [loginData, setLoginData] = useState({ email: '', password: '' });
+  const [alarmData, setAlarmData] = useState({ time: '', label: '' });
+  
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
-  const audioRef = useRef(null);
-  const checkIntervalRef = useRef(null);
+  const streamRef = useRef(null);
+  const mediaRecorderRef = useRef(null);
+  const audioChunksRef = useRef([]);
+  const recordingIntervalRef = useRef(null);
+  const alarmCheckIntervalRef = useRef(null);
 
-  // Check for existing session on mount
   useEffect(() => {
-    const currentUser = mockBackend.getCurrentUser();
-    if (currentUser) {
-      setUser(currentUser);
-      setAlarms(mockBackend.getAlarms());
-      setShowAuth(false);
-    }
+    const timer = setInterval(() => {
+      setCurrentTime(new Date());
+    }, 1000);
+    return () => clearInterval(timer);
   }, []);
 
-  // Check alarms every second
   useEffect(() => {
-    if (user && !activeAlarm) {
-      checkIntervalRef.current = setInterval(() => {
-        const now = new Date();
-        const currentTime = formatTime(now);
-        
-        alarms.forEach(alarm => {
-          const alarmTime = `${alarm.hour}:${alarm.minute} ${alarm.period}`;
-          if (currentTime === alarmTime) {
-            triggerAlarm(alarm);
-          }
-        });
+    if (currentUser && alarms.length > 0) {
+      alarmCheckIntervalRef.current = setInterval(() => {
+        checkAlarms();
       }, 1000);
     }
-    
     return () => {
-      if (checkIntervalRef.current) {
-        clearInterval(checkIntervalRef.current);
+      if (alarmCheckIntervalRef.current) {
+        clearInterval(alarmCheckIntervalRef.current);
       }
     };
-  }, [user, alarms, activeAlarm]);
+  }, [currentUser, alarms]);
 
-  // Cleanup camera stream on unmount
-  useEffect(() => {
-    return () => {
-      if (stream) {
-        stream.getTracks().forEach(track => track.stop());
-      }
-    };
-  }, [stream]);
-
-  const formatTime = (date) => {
-    let hours = date.getHours();
-    const minutes = date.getMinutes().toString().padStart(2, '0');
-    const period = hours >= 12 ? 'PM' : 'AM';
-    hours = hours % 12 || 12;
-    return `${hours}:${minutes} ${period}`;
-  };
-
-  const handleAuth = () => {
-    setAuthError('');
+  const checkAlarms = () => {
+    const now = new Date();
+    const currentTimeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
     
-    try {
-      if (isLogin) {
-        const userData = mockBackend.login(email, password);
-        setUser(userData);
-        setAlarms(mockBackend.getAlarms());
-      } else {
-        const userData = mockBackend.register(email, password);
-        setUser(userData);
-        setAlarms([]);
+    alarms.forEach(alarm => {
+      if (alarm.time === currentTimeStr && alarm.userId === currentUser?.id && !alarm.dismissed) {
+        if (!activeAlarm || activeAlarm.id !== alarm.id) {
+          triggerAlarm(alarm);
+        }
       }
-      setShowAuth(false);
-      setEmail('');
-      setPassword('');
-    } catch (err) {
-      setAuthError(err.message);
-    }
-  };
-
-  const handleLogout = () => {
-    mockBackend.logout();
-    setUser(null);
-    setAlarms([]);
-    setShowAuth(true);
-    if (activeAlarm) stopAlarm();
-  };
-
-  const handleAddAlarm = () => {
-    try {
-      const alarm = mockBackend.addAlarm({ ...newAlarm, enabled: true });
-      setAlarms([...alarms, alarm]);
-      setShowAddAlarm(false);
-      setNewAlarm({ hour: '12', minute: '00', period: 'AM', sound: 'default' });
-    } catch (err) {
-      alert(err.message);
-    }
-  };
-
-  const handleDeleteAlarm = (alarmId) => {
-    try {
-      mockBackend.deleteAlarm(alarmId);
-      setAlarms(alarms.filter(a => a.id !== alarmId));
-    } catch (err) {
-      alert(err.message);
-    }
+    });
   };
 
   const triggerAlarm = (alarm) => {
     setActiveAlarm(alarm);
-    if (audioRef.current) {
-      audioRef.current.play().catch(err => console.log('Audio play failed:', err));
+    playAlarmSound();
+  };
+
+  const playAlarmSound = () => {
+    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    const oscillator = audioContext.createOscillator();
+    const gainNode = audioContext.createGain();
+    
+    oscillator.connect(gainNode);
+    gainNode.connect(audioContext.destination);
+    
+    oscillator.frequency.value = 800;
+    oscillator.type = 'sine';
+    gainNode.gain.value = 0.3;
+    
+    oscillator.start();
+    
+    let beepCount = 0;
+    const beepInterval = setInterval(() => {
+      if (beepCount < 10) {
+        oscillator.frequency.value = beepCount % 2 === 0 ? 800 : 600;
+        beepCount++;
+      } else {
+        oscillator.stop();
+        clearInterval(beepInterval);
+      }
+    }, 300);
+  };
+
+  const validateEmail = (email) => {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  };
+
+  const handleSignup = () => {
+    const { username, age, email, password } = signupData;
+
+    if (!username || !age || !email || !password) {
+      alert('All fields are required!');
+      return;
+    }
+
+    if (!validateEmail(email)) {
+      alert('Please enter a valid email address!');
+      return;
+    }
+
+    const ageNum = parseInt(age);
+    if (ageNum < 13 || ageNum > 120) {
+      alert('Please enter a valid age!');
+      return;
+    }
+
+    if (users.find(u => u.email === email)) {
+      alert('Email already registered!');
+      return;
+    }
+
+    const newUser = {
+      id: Date.now(),
+      username,
+      age: ageNum,
+      email,
+      password,
+      loginCount: 1,
+      lastLogin: new Date().toISOString()
+    };
+
+    const updatedUsers = [...users, newUser];
+    setUsers(updatedUsers);
+    setCurrentUser(newUser);
+    setShowSignup(false);
+    setShowLogin(false);
+    setSignupData({ username: '', age: '', email: '', password: '' });
+  };
+
+  const handleLogin = () => {
+    const { email, password } = loginData;
+
+    if (!validateEmail(email)) {
+      alert('Please enter a valid email address!');
+      return;
+    }
+
+    const user = users.find(u => u.email === email && u.password === password);
+    
+    if (user) {
+      const updatedUser = {
+        ...user,
+        loginCount: user.loginCount + 1,
+        lastLogin: new Date().toISOString()
+      };
+      const updatedUsers = users.map(u => u.id === user.id ? updatedUser : u);
+      setUsers(updatedUsers);
+      setCurrentUser(updatedUser);
+      setShowLogin(false);
+      setLoginData({ email: '', password: '' });
+    } else {
+      alert('Invalid email or password!');
     }
   };
 
-  const stopAlarm = () => {
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current.currentTime = 0;
+  const handleAddAlarm = () => {
+    const { time, label } = alarmData;
+
+    if (!time) {
+      alert('Please select a time!');
+      return;
     }
-    
-    // Stop camera stream
-    if (stream) {
-      stream.getTracks().forEach(track => track.stop());
-      setStream(null);
+
+    const newAlarm = {
+      id: Date.now(),
+      userId: currentUser.id,
+      time,
+      label: label || 'Alarm',
+      dismissed: false
+    };
+
+    setAlarms([...alarms, newAlarm]);
+    setAlarmData({ time: '', label: '' });
+  };
+
+  const handleDeleteAlarm = (alarmId) => {
+    setAlarms(alarms.filter(a => a.id !== alarmId));
+    if (activeAlarm?.id === alarmId) {
+      setActiveAlarm(null);
     }
-    
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
-    }
-    
-    setActiveAlarm(null);
-    setShowCamera(false);
-    setCameraError('');
   };
 
   const startCamera = async () => {
-    setCameraError('');
-    setShowCamera(true);
-    
     try {
-      const mediaStream = await navigator.mediaDevices.getUserMedia({ 
-        video: { 
-          facingMode: 'user',
-          width: { ideal: 1280 },
-          height: { ideal: 720 }
-        } 
-      });
-      
-      setStream(mediaStream);
-      
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      streamRef.current = stream;
       if (videoRef.current) {
-        videoRef.current.srcObject = mediaStream;
-        // Wait for video to be ready
-        videoRef.current.onloadedmetadata = () => {
-          videoRef.current.play();
-        };
+        videoRef.current.srcObject = stream;
       }
+      setShowCamera(true);
     } catch (err) {
-      console.error('Camera error:', err);
-      setCameraError('Camera access denied. Please allow camera access in your browser settings.');
-      setShowCamera(false);
+      alert('Camera access denied. Please enable camera permissions.');
     }
   };
 
-  const capturePhoto = () => {
-    if (!videoRef.current || !canvasRef.current) {
-      setCameraError('Camera not ready. Please try again.');
-      return;
-    }
-    
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    
-    // Check if video is playing
-    if (video.readyState !== video.HAVE_ENOUGH_DATA) {
-      setCameraError('Video is loading. Please wait a moment and try again.');
-      return;
-    }
-    
-    try {
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(video, 0, 0);
+  const takePhoto = () => {
+    if (videoRef.current && canvasRef.current) {
+      const context = canvasRef.current.getContext('2d');
+      canvasRef.current.width = videoRef.current.videoWidth;
+      canvasRef.current.height = videoRef.current.videoHeight;
+      context.drawImage(videoRef.current, 0, 0);
       
-      // Successfully captured - dismiss alarm
-      stopAlarm();
-    } catch (err) {
-      console.error('Capture error:', err);
-      setCameraError('Failed to capture photo. Please try again.');
+      stopCamera();
+      dismissAlarm();
     }
   };
 
-  if (showAuth) {
+  const stopCamera = () => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+    }
+    setShowCamera(false);
+  };
+
+  const startVoiceRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaRecorderRef.current = new MediaRecorder(stream);
+      audioChunksRef.current = [];
+
+      mediaRecorderRef.current.ondataavailable = (event) => {
+        audioChunksRef.current.push(event.data);
+      };
+
+      mediaRecorderRef.current.onstop = () => {
+        stream.getTracks().forEach(track => track.stop());
+        dismissAlarm();
+      };
+
+      mediaRecorderRef.current.start();
+      setIsRecording(true);
+      setRecordingTime(0);
+      setShowVoiceRecorder(true);
+
+      recordingIntervalRef.current = setInterval(() => {
+        setRecordingTime(prev => {
+          if (prev >= 4) {
+            stopVoiceRecording();
+            return 5;
+          }
+          return prev + 1;
+        });
+      }, 1000);
+    } catch (err) {
+      alert('Microphone access denied. Please enable microphone permissions.');
+    }
+  };
+
+  const stopVoiceRecording = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+      setShowVoiceRecorder(false);
+      if (recordingIntervalRef.current) {
+        clearInterval(recordingIntervalRef.current);
+      }
+    }
+  };
+
+  const dismissAlarm = () => {
+    if (activeAlarm) {
+      setAlarms(alarms.map(a => 
+        a.id === activeAlarm.id ? { ...a, dismissed: true } : a
+      ));
+    }
+    setActiveAlarm(null);
+    setShowCamera(false);
+    setShowVoiceRecorder(false);
+  };
+
+  const handleLogout = () => {
+    setCurrentUser(null);
+    setAlarms([]);
+    setActiveAlarm(null);
+    setShowLogin(true);
+  };
+
+  const getUserAlarms = () => {
+    return alarms.filter(a => a.userId === currentUser?.id);
+  };
+
+  if (showLogin || showSignup) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center p-4">
+      <div className="min-h-screen bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 flex items-center justify-center p-4">
         <div className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-md">
           <div className="text-center mb-8">
-            <div className="inline-flex items-center justify-center w-16 h-16 bg-indigo-100 rounded-full mb-4">
-              <Camera className="w-8 h-8 text-indigo-600" />
-            </div>
-            <h1 className="text-3xl font-bold text-gray-800">Photo Alarm</h1>
-            <p className="text-gray-600 mt-2">Wake up with a selfie!</p>
+            <Bell className="w-16 h-16 mx-auto mb-4 text-indigo-600" />
+            <h1 className="text-3xl font-bold text-gray-800">Alarm Clock Pro</h1>
+            <p className="text-gray-600 mt-2">Wake up verified with photo or voice</p>
           </div>
-          
-          <div className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Email</label>
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                onKeyPress={(e) => e.key === 'Enter' && handleAuth()}
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-                required
-              />
-            </div>
-            
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Password</label>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                onKeyPress={(e) => e.key === 'Enter' && handleAuth()}
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-                required
-              />
-            </div>
-            
-            {authError && (
-              <div className="bg-red-50 text-red-600 p-3 rounded-lg text-sm">
-                {authError}
+
+          {showSignup ? (
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Username</label>
+                <input
+                  type="text"
+                  value={signupData.username}
+                  onChange={(e) => setSignupData({...signupData, username: e.target.value})}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                  placeholder="Enter username"
+                />
               </div>
-            )}
-            
-            <button
-              onClick={handleAuth}
-              className="w-full bg-indigo-600 text-white py-3 rounded-lg font-semibold hover:bg-indigo-700 transition"
-            >
-              {isLogin ? 'Log In' : 'Sign Up'}
-            </button>
-            
-            <button
-              onClick={() => setIsLogin(!isLogin)}
-              className="w-full text-indigo-600 text-sm hover:underline"
-            >
-              {isLogin ? "Don't have an account? Sign up" : 'Already have an account? Log in'}
-            </button>
-          </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Age</label>
+                <input
+                  type="number"
+                  value={signupData.age}
+                  onChange={(e) => setSignupData({...signupData, age: e.target.value})}
+                  min="13"
+                  max="120"
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                  placeholder="Enter age"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
+                <input
+                  type="email"
+                  value={signupData.email}
+                  onChange={(e) => setSignupData({...signupData, email: e.target.value})}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                  placeholder="Enter email"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
+                <input
+                  type="password"
+                  value={signupData.password}
+                  onChange={(e) => setSignupData({...signupData, password: e.target.value})}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                  placeholder="Enter password (min 6 characters)"
+                />
+              </div>
+              <button
+                onClick={handleSignup}
+                className="w-full bg-indigo-600 text-white py-3 rounded-lg font-semibold hover:bg-indigo-700 transition"
+              >
+                Sign Up
+              </button>
+              <button
+                onClick={() => { setShowSignup(false); setShowLogin(true); }}
+                className="w-full text-indigo-600 py-2 text-sm hover:underline"
+              >
+                Already have an account? Log in
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
+                <input
+                  type="email"
+                  value={loginData.email}
+                  onChange={(e) => setLoginData({...loginData, email: e.target.value})}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                  placeholder="Enter email"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
+                <input
+                  type="password"
+                  value={loginData.password}
+                  onChange={(e) => setLoginData({...loginData, password: e.target.value})}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                  placeholder="Enter password"
+                />
+              </div>
+              <button
+                onClick={handleLogin}
+                className="w-full bg-indigo-600 text-white py-3 rounded-lg font-semibold hover:bg-indigo-700 transition"
+              >
+                Log In
+              </button>
+              <button
+                onClick={() => { setShowLogin(false); setShowSignup(true); }}
+                className="w-full text-indigo-600 py-2 text-sm hover:underline"
+              >
+                Don't have an account? Sign up
+              </button>
+            </div>
+          )}
+
+          {users.length > 0 && (
+            <div className="mt-6 pt-6 border-t border-gray-200">
+              <div className="flex items-center justify-center text-gray-600 text-sm">
+                <Users className="w-4 h-4 mr-2" />
+                <span>{users.length} total users • {users.reduce((sum, u) => sum + u.loginCount, 0)} total logins</span>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-indigo-500 to-purple-600 p-4">
-      <audio ref={audioRef} loop>
-        <source src="data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivrJBhNjVgodDbq2EcBj+a2/LDciUFLIHO8tiJNwgZaLvt559NEAxQp+PwtmMcBjiR1/LMeSwFJHfH8N2QQAoUXrTp66hVFApGn+DyvmwhBTGH0fPTgjMGHm7A7+OZUA0PVqzn77BdGAg+ltryxnMlBSuAzvLZjToIGWi77eifTBAMUKXj8LljHAY4kdfyzHksBSR3x/DdkEEKFF60p+uoVRQKRp/g8r5sIQUxh9Hz04IzBh5uwO/jmVAND1as5++wXRgIPpba8sZzJQUrj8/y2Yw6CBlouu3on04QDFCl4/C5YxwGOJHX8sx5LAUkd8fw3ZBBChRet" type="audio/wav" />
-      </audio>
-      <canvas ref={canvasRef} className="hidden" />
-      
+    <div className="min-h-screen bg-gradient-to-br from-blue-500 via-purple-500 to-pink-500 p-4">
       <div className="max-w-4xl mx-auto">
-        <div className="flex items-center justify-between mb-8">
-          <div className="flex items-center space-x-3">
-            <div className="bg-white p-3 rounded-full">
-              <Camera className="w-6 h-6 text-indigo-600" />
-            </div>
+        <div className="bg-white rounded-2xl shadow-xl p-6 mb-6">
+          <div className="flex justify-between items-center">
             <div>
-              <h1 className="text-2xl font-bold text-white">Photo Alarm</h1>
-              <p className="text-indigo-100 text-sm">{user?.email}</p>
+              <h1 className="text-3xl font-bold text-gray-800">Welcome, {currentUser.username}!</h1>
+              <p className="text-gray-600 mt-1">
+                {currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+              </p>
+              <p className="text-sm text-gray-500 mt-1">Login #{currentUser.loginCount}</p>
             </div>
+            <button
+              onClick={handleLogout}
+              className="flex items-center gap-2 px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition"
+            >
+              <LogOut className="w-4 h-4" />
+              Logout
+            </button>
           </div>
-          <button
-            onClick={handleLogout}
-            className="bg-white/20 hover:bg-white/30 text-white px-4 py-2 rounded-lg flex items-center space-x-2 transition"
-          >
-            <LogOut className="w-4 h-4" />
-            <span>Logout</span>
-          </button>
         </div>
 
-        {activeAlarm && !showCamera && (
-          <div className="bg-red-500 text-white p-8 rounded-2xl shadow-2xl mb-6 animate-pulse">
-            <div className="text-center">
-              <Bell className="w-16 h-16 mx-auto mb-4 animate-bounce" />
-              <h2 className="text-3xl font-bold mb-2">ALARM!</h2>
-              <p className="text-xl mb-6">{activeAlarm.hour}:{activeAlarm.minute} {activeAlarm.period}</p>
-              <button
-                onClick={startCamera}
-                className="bg-white text-red-500 px-8 py-4 rounded-lg font-bold text-lg hover:bg-gray-100 transition"
-              >
-                Take Photo to Dismiss
-              </button>
-            </div>
-          </div>
-        )}
-
-        {showCamera && (
-          <div className="bg-white p-6 rounded-2xl shadow-2xl mb-6">
-            <h3 className="text-xl font-bold mb-4 text-center text-gray-800">Take a selfie to dismiss alarm</h3>
-            
-            {cameraError && (
-              <div className="bg-red-50 text-red-600 p-3 rounded-lg mb-4 text-sm">
-                {cameraError}
-              </div>
-            )}
-            
-            <div className="relative bg-black rounded-lg overflow-hidden mb-4">
-              <video
-                ref={videoRef}
-                autoPlay
-                playsInline
-                muted
-                className="w-full h-auto"
-                style={{ maxHeight: '400px' }}
-              />
-            </div>
-            
+        <div className="bg-white rounded-2xl shadow-xl p-6 mb-6">
+          <h2 className="text-2xl font-bold text-gray-800 mb-4">Add New Alarm</h2>
+          <div className="flex gap-4">
+            <input
+              type="time"
+              value={alarmData.time}
+              onChange={(e) => setAlarmData({...alarmData, time: e.target.value})}
+              className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+            />
+            <input
+              type="text"
+              value={alarmData.label}
+              onChange={(e) => setAlarmData({...alarmData, label: e.target.value})}
+              placeholder="Alarm label (optional)"
+              className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+            />
             <button
-              onClick={capturePhoto}
-              className="w-full bg-indigo-600 text-white py-3 rounded-lg font-semibold hover:bg-indigo-700 transition flex items-center justify-center space-x-2"
-            >
-              <Camera className="w-5 h-5" />
-              <span>Capture Photo & Dismiss Alarm</span>
-            </button>
-          </div>
-        )}
-
-        <div className="bg-white rounded-2xl shadow-xl p-6">
-          <div className="flex items-center justify-between mb-6">
-            <h2 className="text-2xl font-bold text-gray-800">My Alarms</h2>
-            <button
-              onClick={() => setShowAddAlarm(!showAddAlarm)}
-              className="bg-indigo-600 text-white px-4 py-2 rounded-lg flex items-center space-x-2 hover:bg-indigo-700 transition"
+              onClick={handleAddAlarm}
+              className="px-6 py-3 bg-indigo-600 text-white rounded-lg font-semibold hover:bg-indigo-700 transition flex items-center gap-2"
             >
               <Plus className="w-5 h-5" />
-              <span>Add Alarm</span>
+              Add
             </button>
           </div>
+        </div>
 
-          {showAddAlarm && (
-            <div className="bg-gray-50 p-6 rounded-xl mb-6">
-              <h3 className="font-semibold mb-4 text-gray-800">New Alarm</h3>
-              <div className="grid grid-cols-3 gap-4 mb-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Hour</label>
-                  <select
-                    value={newAlarm.hour}
-                    onChange={(e) => setNewAlarm({ ...newAlarm, hour: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                  >
-                    {[...Array(12)].map((_, i) => (
-                      <option key={i + 1} value={String(i + 1).padStart(2, '0')}>
-                        {String(i + 1).padStart(2, '0')}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Minute</label>
-                  <select
-                    value={newAlarm.minute}
-                    onChange={(e) => setNewAlarm({ ...newAlarm, minute: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                  >
-                    {[...Array(60)].map((_, i) => (
-                      <option key={i} value={String(i).padStart(2, '0')}>
-                        {String(i).padStart(2, '0')}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">AM/PM</label>
-                  <select
-                    value={newAlarm.period}
-                    onChange={(e) => setNewAlarm({ ...newAlarm, period: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                  >
-                    <option value="AM">AM</option>
-                    <option value="PM">PM</option>
-                  </select>
-                </div>
-              </div>
-              <div className="mb-4">
-                <label className="block text-sm font-medium text-gray-700 mb-2">Sound</label>
-                <select
-                  value={newAlarm.sound}
-                  onChange={(e) => setNewAlarm({ ...newAlarm, sound: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg"
-                >
-                  <option value="default">Default</option>
-                  <option value="beep">Beep</option>
-                  <option value="chime">Chime</option>
-                </select>
-              </div>
-              <button
-                onClick={handleAddAlarm}
-                className="w-full bg-indigo-600 text-white py-2 rounded-lg font-semibold hover:bg-indigo-700 transition"
-              >
-                Save Alarm
-              </button>
-            </div>
-          )}
-
-          {alarms.length === 0 ? (
-            <div className="text-center py-12">
-              <Clock className="w-16 h-16 text-gray-300 mx-auto mb-4" />
-              <p className="text-gray-500">No alarms set</p>
-            </div>
+        <div className="bg-white rounded-2xl shadow-xl p-6">
+          <h2 className="text-2xl font-bold text-gray-800 mb-4">Your Alarms</h2>
+          {getUserAlarms().length === 0 ? (
+            <p className="text-gray-500 text-center py-8">No alarms set yet. Add one above!</p>
           ) : (
             <div className="space-y-3">
-              {alarms.map((alarm) => (
+              {getUserAlarms().map(alarm => (
                 <div
                   key={alarm.id}
-                  className="flex items-center justify-between p-4 bg-gray-50 rounded-lg hover:bg-gray-100 transition"
+                  className={`flex items-center justify-between p-4 rounded-lg border-2 ${
+                    alarm.dismissed ? 'bg-gray-100 border-gray-300' : 'bg-indigo-50 border-indigo-300'
+                  }`}
                 >
-                  <div className="flex items-center space-x-4">
-                    <Clock className="w-6 h-6 text-indigo-600" />
+                  <div className="flex items-center gap-4">
+                    <Bell className={`w-6 h-6 ${alarm.dismissed ? 'text-gray-400' : 'text-indigo-600'}`} />
                     <div>
-                      <p className="text-2xl font-bold text-gray-800">
-                        {alarm.hour}:{alarm.minute} {alarm.period}
+                      <p className={`text-2xl font-bold ${alarm.dismissed ? 'text-gray-500' : 'text-gray-800'}`}>
+                        {alarm.time}
                       </p>
-                      <p className="text-sm text-gray-500">Sound: {alarm.sound}</p>
+                      <p className={`text-sm ${alarm.dismissed ? 'text-gray-400' : 'text-gray-600'}`}>
+                        {alarm.label} {alarm.dismissed && '(Dismissed)'}
+                      </p>
                     </div>
                   </div>
                   <button
                     onClick={() => handleDeleteAlarm(alarm.id)}
-                    className="text-red-500 hover:text-red-700 p-2"
+                    className="p-2 text-red-500 hover:bg-red-100 rounded-lg transition"
                   >
                     <Trash2 className="w-5 h-5" />
                   </button>
@@ -535,11 +490,83 @@ export default function PhotoAlarmApp() {
           )}
         </div>
 
-        <div className="mt-6 bg-white/20 backdrop-blur-sm p-4 rounded-lg">
-          <p className="text-white text-sm text-center">
-            💡 Tip: When your alarm goes off, you must take a selfie to dismiss it!
-          </p>
-        </div>
+        {activeAlarm && (
+          <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center p-4 z-50">
+            <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full animate-pulse">
+              <div className="text-center mb-6">
+                <Bell className="w-20 h-20 mx-auto mb-4 text-red-500 animate-bounce" />
+                <h2 className="text-3xl font-bold text-gray-800 mb-2">ALARM!</h2>
+                <p className="text-xl text-gray-600">{activeAlarm.label}</p>
+                <p className="text-4xl font-bold text-indigo-600 mt-4">{activeAlarm.time}</p>
+              </div>
+
+              {!showCamera && !showVoiceRecorder && (
+                <div className="space-y-3">
+                  <button
+                    onClick={startCamera}
+                    className="w-full flex items-center justify-center gap-3 px-6 py-4 bg-indigo-600 text-white rounded-lg font-semibold hover:bg-indigo-700 transition text-lg"
+                  >
+                    <Camera className="w-6 h-6" />
+                    Take Photo to Dismiss
+                  </button>
+                  <button
+                    onClick={startVoiceRecording}
+                    className="w-full flex items-center justify-center gap-3 px-6 py-4 bg-purple-600 text-white rounded-lg font-semibold hover:bg-purple-700 transition text-lg"
+                  >
+                    <Mic className="w-6 h-6" />
+                    Record Voice (5s)
+                  </button>
+                </div>
+              )}
+
+              {showCamera && (
+                <div className="space-y-4">
+                  <video ref={videoRef} autoPlay className="w-full rounded-lg" />
+                  <canvas ref={canvasRef} className="hidden" />
+                  <div className="flex gap-3">
+                    <button
+                      onClick={takePhoto}
+                      className="flex-1 px-6 py-3 bg-green-600 text-white rounded-lg font-semibold hover:bg-green-700 transition"
+                    >
+                      Capture Photo
+                    </button>
+                    <button
+                      onClick={stopCamera}
+                      className="px-6 py-3 bg-gray-600 text-white rounded-lg font-semibold hover:bg-gray-700 transition"
+                    >
+                      <X className="w-5 h-5" />
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {showVoiceRecorder && (
+                <div className="text-center space-y-4">
+                  <div className="relative">
+                    <Mic className={`w-20 h-20 mx-auto ${isRecording ? 'text-red-500 animate-pulse' : 'text-gray-400'}`} />
+                    <div className="text-4xl font-bold text-indigo-600 mt-4">
+                      {recordingTime}s / 5s
+                    </div>
+                  </div>
+                  <div className="w-full bg-gray-200 rounded-full h-3">
+                    <div
+                      className="bg-indigo-600 h-3 rounded-full transition-all duration-1000"
+                      style={{ width: `${(recordingTime / 5) * 100}%` }}
+                    />
+                  </div>
+                  {isRecording && (
+                    <button
+                      onClick={stopVoiceRecording}
+                      className="w-full px-6 py-3 bg-red-600 text-white rounded-lg font-semibold hover:bg-red-700 transition"
+                    >
+                      Stop Recording
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
