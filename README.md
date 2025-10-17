@@ -16,3 +16,11 @@ trial 3
 - new log in page that REQUIRES user enters an email (SOMETHING@domain.com)
 - alarm works
 - name tags for alarms
+
+new update:
+- new light/dark mode feature
+- added to do check list to place tasks the night prior
+- added a brainstorm tab to add thoughts in the morning
+- different ring tones with different frequency for better sleep
+Classic Beep (800Hz), Urgent (1000Hz, fast beeping), Gentle Wake (600Hz, slower), Radar (440Hz, very fast)
+- better log in memory
